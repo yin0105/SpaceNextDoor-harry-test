@@ -1,0 +1,13 @@
+type Foo {
+  id: Int!
+  foo: String!
+  bar: String!
+}
+
+type Query {
+  foo: Foo!
+}
+
+type Mutation {
+  addFoo: Foo!
+}

@@ -1,0 +1,261 @@
+version: 2
+jobs:
+  run_unit_tests:
+    working_directory: ~/repo
+    docker:
+      - image: circleci/node:12
+        environment:
+          NODE_ENV: development
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - v1-dependencies-{{ checksum "package.json" }}
+            - v1-dependencies-
+      - run:
+          name: Install Dependencies
+          command: npm install
+      - save_cache:
+          paths:
+            - node_modules
+          key: v1-dependencies-{{ checksum "package.json" }}
+      - run:
+          name: Run tests
+          command: echo "pypass"
+      - store_test_results:
+          path: test-results
+  pre_build:
+    docker:
+      - image: circleci/python:2.7-jessie
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: Build application Docker image
+          command: |
+            docker build \
+              --no-cache \
+              -t app .
+  # Build dev environment
+  dev_build:
+    docker:
+      - image: circleci/python:2.7-jessie
+        environment:
+          ENVIRONMENT: dev
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: Install dependencies
+          command: sudo pip install awscli --upgrade
+      - run:
+          name: Setup AWS SDK
+          command: |
+            aws configure set region $AWS_REGION
+            $(aws ecr get-login --no-include-email --region $AWS_REGION)
+      - run:
+          name: Build application Docker image
+          command: |
+            docker build --no-cache -t app .
+            docker tag app $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$SERVICE_NAME:$ENVIRONMENT-$CIRCLE_SHA1
+            docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$SERVICE_NAME:$ENVIRONMENT-$CIRCLE_SHA1
+  # Deploy dev environment for Singapore region
+  deploy_to_dev:
+    docker:
+      - image: google/cloud-sdk:290.0.0
+        environment:
+          ENVIRONMENT: dev
+          NODE_ENV: development
+          NAMESPACE: develop
+          CLUSTER_NAME: snd-nonprod
+          AWS_REGION: ap-southeast-1
+          CONTAINER_PORT: 3000
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: Install dependencies
+          command: |
+            pip3 install awscli --upgrade
+            apt-get install -qq -y gettext
+      - run:
+          name: Get the deployment file
+          command: |
+            envsubst < deployment/deployment.dev.yml > output.yml
+            scp "output.yml" ec2-user@3.0.134.33:/home/ec2-user
+      - run:
+          name: Deploy
+          command: |
+            ssh -o StrictHostKeyChecking=no ec2-user@3.0.134.33 \
+              kubectl apply -f output.yml --record
+              kubectl rollout status deployment/${SERVICE_NAME} -n ${NAME_SPACE}
+              rm -rf output.yml
+# Build staging environment
+  staging_build:
+    docker:
+      - image: circleci/python:2.7-jessie
+        environment:
+          ENVIRONMENT: stg
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: Install dependencies
+          command: sudo pip install awscli --upgrade
+      - run:
+          name: Setup AWS SDK
+          command: |
+            aws configure set region $AWS_REGION
+            $(aws ecr get-login --no-include-email --region $AWS_REGION)
+      - run:
+          name: Build application Docker image
+          command: |
+            docker build --no-cache -t app .
+            docker tag app $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$SERVICE_NAME:$ENVIRONMENT-$CIRCLE_SHA1
+            docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$SERVICE_NAME:$ENVIRONMENT-$CIRCLE_SHA1
+
+  # Deploy stg
+  deploy_to_staging:
+    docker:
+      - image: google/cloud-sdk:290.0.0
+        environment:
+          ENVIRONMENT: stg
+          NODE_ENV: staging
+          NAMESPACE: staging
+          CLUSTER_NAME: snd-nonprod
+          AWS_REGION: ap-southeast-1
+          CONTAINER_PORT: 3000
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: Install dependencies
+          command: |
+            pip3 install awscli --upgrade
+            apt-get install -qq -y gettext
+      - run:
+          name: Deploy to Prod environment
+          command: |
+            envsubst < deployment/deployment.stg.yml > output.yml
+            scp "output.yml" ec2-user@3.0.134.33:/home/ec2-user
+      - run:
+          name: Deploy
+          command: |
+            ssh -o StrictHostKeyChecking=no ec2-user@3.0.134.33 \
+              kubectl apply -f output.yml --record
+              kubectl rollout status deployment/${SERVICE_NAME} -n ${NAME_SPACE}
+              rm -rf output.yml
+  # Build prod
+  prod_build:
+    docker:
+      - image: circleci/python:2.7-jessie
+        environment:
+          ENVIRONMENT: prod
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: Install dependencies
+          command: sudo pip install awscli --upgrade
+      - run:
+          name: Setup AWS SDK
+          command: |
+            aws configure set region $AWS_REGION
+            $(aws ecr get-login --no-include-email --region $AWS_REGION)
+      - run:
+          name: Build application Docker image
+          command: |
+            docker build --no-cache -t app .
+            docker tag app $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$SERVICE_NAME:$ENVIRONMENT-$CIRCLE_SHA1
+            docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$SERVICE_NAME:$ENVIRONMENT-$CIRCLE_SHA1
+  # Deploy prod environment for Singapore region
+  deploy_to_prod:
+    docker:
+      - image: google/cloud-sdk:290.0.0
+        environment:
+          ENVIRONMENT: prod
+          NODE_ENV: production
+          NAMESPACE: production
+          CLUSTER_NAME: snd-prod
+          AWS_REGION: ap-southeast-1
+          CONTAINER_PORT: 3000
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: Install dependencies
+          command: |
+            pip3 install awscli --upgrade
+            apt-get install -qq -y gettext
+      - run:
+          name: Deploy to Prod environment
+          command: |
+            envsubst < deployment/deployment.prd.yml > output.yml
+            scp "output.yml" ec2-user@3.0.134.33:/home/ec2-user
+      - run:
+          name: Deploy
+          command: |
+            ssh -o StrictHostKeyChecking=no ec2-user@3.0.134.33 \
+              kubectl apply -f output.yml --record
+              kubectl rollout status deployment/${SERVICE_NAME} -n ${NAME_SPACE}
+              rm -rf output.yml
+ 
+workflows:
+  version: 2
+  build_and_deploy:
+    jobs:
+      - run_unit_tests
+      - pre_build:
+          filters:
+            branches:
+              ignore:
+                - develop
+                - staging
+                - master
+          requires:
+            - run_unit_tests
+
+      - dev_build:
+          filters:
+            branches:
+              only:
+                - develop
+          requires:
+            - run_unit_tests
+      - deploy_to_dev:
+          filters:
+            branches:
+              only:
+                - develop
+          requires:
+            - dev_build
+      
+      - staging_build:
+          filters:
+            branches:
+              only:
+                - staging
+          requires:
+            - run_unit_tests
+      - deploy_to_staging:
+          filters:
+            branches:
+              only:
+                - staging
+          requires:
+            - staging_build
+      
+      - prod_build:
+          filters:
+            branches:
+              only:
+                - master
+          requires:
+            - run_unit_tests
+      - deploy_to_prod:
+          filters:
+            branches:
+              only:
+                - master
+          requires:
+            - prod_build
